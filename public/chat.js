@@ -1,8 +1,8 @@
 
-/* FlyTripVisa AI Chat
-   Cloudflare Worker API integration
-   HTML structure remains unchanged.
-*/
+/**
+ * FlyTripVisa AI Chat
+ * Cloudflare Workers AI integration
+ */
 
 (() => {
   "use strict";
@@ -10,202 +10,229 @@
   const API_URL = "/api/ai-chat";
   const MAX_HISTORY = 30;
 
-  let chatHistory = [];
-  let isSending = false;
+  let history = [];
+  let sending = false;
 
   const $ = (id) => document.getElementById(id);
 
-  const elements = {
-    popup: $("chatPopupOverlay"),
-    messages: $("chatPopupMessages"),
-    input: $("chatPopupInput"),
-    send: $("chatPopupSendBtn"),
-    close: $("closeChatPopupBtn"),
-    heroInput: $("aiChatInput"),
-    heroSend: $("aiChatSendBtn"),
-    navButton: $("navAiChatBtn")
-  };
+  const overlay = $("chatPopupOverlay");
+  const messages = $("chatPopupMessages");
+  const input = $("chatPopupInput");
+  const sendBtn = $("chatPopupSendBtn");
+  const closeBtn = $("closeChatPopupBtn");
+  const heroInput = $("aiChatInput");
+  const heroBtn = $("aiChatSendBtn");
+  const navBtn = $("navAiChatBtn");
 
-  function addMessage(role, content) {
-    if (!elements.messages) return null;
-
-    const message = document.createElement("div");
-    message.className =
-      role === "user" ? "user-message" : "assistant-message";
-
-    message.textContent = content;
-    elements.messages.appendChild(message);
-
-    elements.messages.scrollTop =
-      elements.messages.scrollHeight;
-
-    return message;
+  if (!overlay || !messages || !input || !sendBtn) {
+    console.error("FlyTripVisa AI: Chat HTML elements not found.");
+    return;
   }
 
-  function setLoading(loading) {
-    isSending = loading;
-
-    if (elements.send) {
-      elements.send.disabled = loading;
-      elements.send.textContent = loading ? "Thinking..." : "Send";
-    }
-
-    if (elements.input) {
-      elements.input.disabled = loading;
-    }
+  function scrollToBottom() {
+    messages.scrollTop = messages.scrollHeight;
   }
 
-  function openChat(prefill = "") {
-    if (elements.popup) {
-      elements.popup.classList.add("active");
-      elements.popup.style.display = "flex";
-    }
+  function addMessage(content, role = "bot") {
+    const element = document.createElement("div");
 
-    if (prefill && elements.input) {
-      elements.input.value = prefill;
-    }
+    element.className = `chat-msg ${role}`;
+    element.textContent = content;
 
-    elements.input?.focus();
+    messages.appendChild(element);
+    scrollToBottom();
+
+    return element;
   }
 
-  function closeChat() {
-    elements.popup?.classList.remove("active");
+  function openChatPopup(prefill = "") {
+    overlay.classList.add("open");
+    document.body.style.overflow = "hidden";
 
-    if (elements.popup) {
-      elements.popup.style.display = "none";
+    if (prefill.trim()) {
+      input.value = prefill.trim();
     }
+
+    if (typeof window.showBottomTabTemporarily === "function") {
+      window.showBottomTabTemporarily();
+    }
+
+    setTimeout(() => input.focus(), 150);
   }
 
-  async function sendMessage(text) {
-    const message = String(text || "").trim();
+  function closeChatPopup() {
+    overlay.classList.remove("open");
+    document.body.style.overflow = "";
+  }
 
-    if (!message || isSending) return;
+  function setLoading(value) {
+    sending = value;
+    sendBtn.disabled = value;
+    input.disabled = value;
 
-    openChat();
-    addMessage("user", message);
+    sendBtn.textContent = value ? "Thinking..." : "Send ✈️";
+  }
 
-    chatHistory.push({
-      role: "user",
-      content: message
+  async function requestAI(message, context) {
+    const response = await fetch(API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        message,
+        context,
+        source: "website"
+      })
     });
 
-    chatHistory = chatHistory.slice(-MAX_HISTORY);
+    const data = await response.json();
 
-    if (elements.input) elements.input.value = "";
+    if (!response.ok) {
+      throw new Error(data.error || `Request failed: ${response.status}`);
+    }
 
-    const loadingMessage = addMessage(
-      "assistant",
-      "Please wait, I'm preparing your answer..."
+    if (typeof data.reply !== "string" || !data.reply.trim()) {
+      throw new Error("Invalid AI response.");
+    }
+
+    return data.reply;
+  }
+
+  async function retryMessage(message, context, loadingElement) {
+    setLoading(true);
+
+    try {
+      const reply = await requestAI(message, context);
+
+      loadingElement.textContent = reply;
+
+      history = [
+        ...context,
+        { role: "user", content: message },
+        { role: "assistant", content: reply }
+      ].slice(-MAX_HISTORY);
+
+    } catch (error) {
+      console.error("FlyTripVisa AI:", error);
+      loadingElement.textContent =
+        "AI connection failed. Please try again.";
+
+      addRetryButton(loadingElement, message, context);
+
+    } finally {
+      setLoading(false);
+      scrollToBottom();
+    }
+  }
+
+  function addRetryButton(element, message, context) {
+    const retry = document.createElement("button");
+
+    retry.type = "button";
+    retry.textContent = "Retry";
+    retry.style.cssText =
+      "display:block;margin-top:8px;padding:7px 14px;border:0;border-radius:9px;cursor:pointer;";
+
+    retry.addEventListener("click", () => {
+      retry.remove();
+      retryMessage(message, context, element);
+    });
+
+    element.appendChild(retry);
+  }
+
+  async function sendMessage(rawMessage) {
+    const message = String(rawMessage || "").trim();
+
+    if (!message || sending) return;
+
+    openChatPopup();
+
+    const context = history.slice(-20);
+
+    addMessage(message, "user");
+    input.value = "";
+
+    const loadingElement = addMessage(
+      "Thinking... Please wait.",
+      "bot"
     );
 
     setLoading(true);
 
     try {
-      const response = await fetch(API_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          message,
-          context: chatHistory.slice(0, -1),
-          source: "website"
-        })
-      });
+      const reply = await requestAI(message, context);
 
-      if (!response.ok) {
-        throw new Error(`Server error: ${response.status}`);
-      }
+      loadingElement.textContent = reply;
 
-      const data = await response.json();
-
-      const reply =
-        data.reply ||
-        data.response ||
-        data.answer ||
-        data.message;
-
-      if (!reply || typeof reply !== "string") {
-        throw new Error("Invalid AI response format.");
-      }
-
-      loadingMessage.textContent = reply;
-
-      chatHistory.push({
-        role: "assistant",
-        content: reply
-      });
-
-      chatHistory = chatHistory.slice(-MAX_HISTORY);
+      history = [
+        ...context,
+        { role: "user", content: message },
+        { role: "assistant", content: reply }
+      ].slice(-MAX_HISTORY);
 
     } catch (error) {
       console.error("FlyTripVisa AI:", error);
 
-      loadingMessage.textContent =
-        "Sorry, the AI service is temporarily unavailable. Please try again.";
+      loadingElement.textContent =
+        "AI connection failed. Please check your internet connection and try again.";
 
-      const retry = document.createElement("button");
-      retry.type = "button";
-      retry.textContent = "Retry";
-      retry.addEventListener("click", () => {
-        loadingMessage.remove();
-
-        chatHistory.pop();
-        sendMessage(message);
-      });
-
-      loadingMessage.appendChild(retry);
-
-      chatHistory.pop();
+      addRetryButton(loadingElement, message, context);
 
     } finally {
       setLoading(false);
-      elements.messages.scrollTop =
-        elements.messages.scrollHeight;
+      scrollToBottom();
     }
   }
 
-  // Popup send
-  elements.send?.addEventListener("click", () => {
-    sendMessage(elements.input?.value);
+  // Popup send button
+  sendBtn.addEventListener("click", () => {
+    sendMessage(input.value);
   });
 
   // Enter to send
-  elements.input?.addEventListener("keydown", (event) => {
+  input.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      sendMessage(elements.input.value);
+      sendMessage(input.value);
     }
   });
 
-  // Hero send
-  elements.heroSend?.addEventListener("click", () => {
-    const message = elements.heroInput?.value.trim();
+  // Hero send button
+  heroBtn?.addEventListener("click", () => {
+    const message = heroInput.value.trim();
+
     if (!message) return;
 
-    openChat();
-    elements.heroInput.value = "";
+    heroInput.value = "";
     sendMessage(message);
   });
 
-  elements.heroInput?.addEventListener("keydown", (event) => {
+  heroInput?.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
-      elements.heroSend?.click();
+      heroBtn?.click();
     }
   });
 
-  // Bottom AI tab
-  elements.navButton?.addEventListener("click", () => {
-    openChat();
+  // Bottom navigation
+  navBtn?.addEventListener("click", () => {
+    openChatPopup();
   });
 
   // Close popup
-  elements.close?.addEventListener("click", closeChat);
+  closeBtn?.addEventListener("click", closeChatPopup);
 
-  // Public functions if existing HTML needs them
-  window.openChatPopup = openChat;
-  window.closeChatPopup = closeChat;
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) {
+      closeChatPopup();
+    }
+  });
+
+  // Expose functions for other page scripts
+  window.openChatPopup = openChatPopup;
+  window.closeChatPopup = closeChatPopup;
   window.sendFlyTripVisaMessage = sendMessage;
 
 })();
