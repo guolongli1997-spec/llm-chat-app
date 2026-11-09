@@ -1,230 +1,211 @@
-/**
- * LLM Chat App Frontend
- *
- * Handles the chat UI interactions and communication with the backend API.
- */
 
-// DOM elements
-const chatMessages = document.getElementById("chat-messages");
-const userInput = document.getElementById("user-input");
-const sendButton = document.getElementById("send-button");
-const typingIndicator = document.getElementById("typing-indicator");
+/* FlyTripVisa AI Chat
+   Cloudflare Worker API integration
+   HTML structure remains unchanged.
+*/
 
-// Chat state
-let chatHistory = [
-	{
-		role: "assistant",
-		content:
-			"Hello! I'm an LLM chat app powered by Cloudflare Workers AI. How can I help you today?",
-	},
-];
-let isProcessing = false;
+(() => {
+  "use strict";
 
-// Auto-resize textarea as user types
-userInput.addEventListener("input", function () {
-	this.style.height = "auto";
-	this.style.height = this.scrollHeight + "px";
-});
+  const API_URL = "/api/ai-chat";
+  const MAX_HISTORY = 30;
 
-// Send message on Enter (without Shift)
-userInput.addEventListener("keydown", function (e) {
-	if (e.key === "Enter" && !e.shiftKey) {
-		e.preventDefault();
-		sendMessage();
-	}
-});
+  let chatHistory = [];
+  let isSending = false;
 
-// Send button click handler
-sendButton.addEventListener("click", sendMessage);
+  const $ = (id) => document.getElementById(id);
 
-/**
- * Sends a message to the chat API and processes the response
- */
-async function sendMessage() {
-	const message = userInput.value.trim();
+  const elements = {
+    popup: $("chatPopupOverlay"),
+    messages: $("chatPopupMessages"),
+    input: $("chatPopupInput"),
+    send: $("chatPopupSendBtn"),
+    close: $("closeChatPopupBtn"),
+    heroInput: $("aiChatInput"),
+    heroSend: $("aiChatSendBtn"),
+    navButton: $("navAiChatBtn")
+  };
 
-	// Don't send empty messages
-	if (message === "" || isProcessing) return;
+  function addMessage(role, content) {
+    if (!elements.messages) return null;
 
-	// Disable input while processing
-	isProcessing = true;
-	userInput.disabled = true;
-	sendButton.disabled = true;
+    const message = document.createElement("div");
+    message.className =
+      role === "user" ? "user-message" : "assistant-message";
 
-	// Add user message to chat
-	addMessageToChat("user", message);
+    message.textContent = content;
+    elements.messages.appendChild(message);
 
-	// Clear input
-	userInput.value = "";
-	userInput.style.height = "auto";
+    elements.messages.scrollTop =
+      elements.messages.scrollHeight;
 
-	// Show typing indicator
-	typingIndicator.classList.add("visible");
+    return message;
+  }
 
-	// Add message to history
-	chatHistory.push({ role: "user", content: message });
+  function setLoading(loading) {
+    isSending = loading;
 
-	try {
-		// Create new assistant response element
-		const assistantMessageEl = document.createElement("div");
-		assistantMessageEl.className = "message assistant-message";
-		assistantMessageEl.innerHTML = "<p></p>";
-		chatMessages.appendChild(assistantMessageEl);
-		const assistantTextEl = assistantMessageEl.querySelector("p");
+    if (elements.send) {
+      elements.send.disabled = loading;
+      elements.send.textContent = loading ? "Thinking..." : "Send";
+    }
 
-		// Scroll to bottom
-		chatMessages.scrollTop = chatMessages.scrollHeight;
+    if (elements.input) {
+      elements.input.disabled = loading;
+    }
+  }
 
-		// Send request to API
-		const response = await fetch("/api/chat", {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-			},
-			body: JSON.stringify({
-				messages: chatHistory,
-			}),
-		});
+  function openChat(prefill = "") {
+    if (elements.popup) {
+      elements.popup.classList.add("active");
+      elements.popup.style.display = "flex";
+    }
 
-		// Handle errors
-		if (!response.ok) {
-			throw new Error("Failed to get response");
-		}
-		if (!response.body) {
-			throw new Error("Response body is null");
-		}
+    if (prefill && elements.input) {
+      elements.input.value = prefill;
+    }
 
-		// Process streaming response
-		const reader = response.body.getReader();
-		const decoder = new TextDecoder();
-		let responseText = "";
-		let buffer = "";
-		const flushAssistantText = () => {
-			assistantTextEl.textContent = responseText;
-			chatMessages.scrollTop = chatMessages.scrollHeight;
-		};
+    elements.input?.focus();
+  }
 
-		let sawDone = false;
-		while (true) {
-			const { done, value } = await reader.read();
+  function closeChat() {
+    elements.popup?.classList.remove("active");
 
-			if (done) {
-				// Process any remaining complete events in buffer
-				const parsed = consumeSseEvents(buffer + "\n\n");
-				for (const data of parsed.events) {
-					if (data === "[DONE]") {
-						break;
-					}
-					try {
-						const jsonData = JSON.parse(data);
-						// Handle both Workers AI format (response) and OpenAI format (choices[0].delta.content)
-						let content = "";
-						if (
-							typeof jsonData.response === "string" &&
-							jsonData.response.length > 0
-						) {
-							content = jsonData.response;
-						} else if (jsonData.choices?.[0]?.delta?.content) {
-							content = jsonData.choices[0].delta.content;
-						}
-						if (content) {
-							responseText += content;
-							flushAssistantText();
-						}
-					} catch (e) {
-						console.error("Error parsing SSE data as JSON:", e, data);
-					}
-				}
-				break;
-			}
+    if (elements.popup) {
+      elements.popup.style.display = "none";
+    }
+  }
 
-			// Decode chunk
-			buffer += decoder.decode(value, { stream: true });
-			const parsed = consumeSseEvents(buffer);
-			buffer = parsed.buffer;
-			for (const data of parsed.events) {
-				if (data === "[DONE]") {
-					sawDone = true;
-					buffer = "";
-					break;
-				}
-				try {
-					const jsonData = JSON.parse(data);
-					// Handle both Workers AI format (response) and OpenAI format (choices[0].delta.content)
-					let content = "";
-					if (
-						typeof jsonData.response === "string" &&
-						jsonData.response.length > 0
-					) {
-						content = jsonData.response;
-					} else if (jsonData.choices?.[0]?.delta?.content) {
-						content = jsonData.choices[0].delta.content;
-					}
-					if (content) {
-						responseText += content;
-						flushAssistantText();
-					}
-				} catch (e) {
-					console.error("Error parsing SSE data as JSON:", e, data);
-				}
-			}
-			if (sawDone) {
-				break;
-			}
-		}
+  async function sendMessage(text) {
+    const message = String(text || "").trim();
 
-		// Add completed response to chat history
-		if (responseText.length > 0) {
-			chatHistory.push({ role: "assistant", content: responseText });
-		}
-	} catch (error) {
-		console.error("Error:", error);
-		addMessageToChat(
-			"assistant",
-			"Sorry, there was an error processing your request.",
-		);
-	} finally {
-		// Hide typing indicator
-		typingIndicator.classList.remove("visible");
+    if (!message || isSending) return;
 
-		// Re-enable input
-		isProcessing = false;
-		userInput.disabled = false;
-		sendButton.disabled = false;
-		userInput.focus();
-	}
-}
+    openChat();
+    addMessage("user", message);
 
-/**
- * Helper function to add message to chat
- */
-function addMessageToChat(role, content) {
-	const messageEl = document.createElement("div");
-	messageEl.className = `message ${role}-message`;
-	messageEl.innerHTML = `<p>${content}</p>`;
-	chatMessages.appendChild(messageEl);
+    chatHistory.push({
+      role: "user",
+      content: message
+    });
 
-	// Scroll to bottom
-	chatMessages.scrollTop = chatMessages.scrollHeight;
-}
+    chatHistory = chatHistory.slice(-MAX_HISTORY);
 
-function consumeSseEvents(buffer) {
-	let normalized = buffer.replace(/\r/g, "");
-	const events = [];
-	let eventEndIndex;
-	while ((eventEndIndex = normalized.indexOf("\n\n")) !== -1) {
-		const rawEvent = normalized.slice(0, eventEndIndex);
-		normalized = normalized.slice(eventEndIndex + 2);
+    if (elements.input) elements.input.value = "";
 
-		const lines = rawEvent.split("\n");
-		const dataLines = [];
-		for (const line of lines) {
-			if (line.startsWith("data:")) {
-				dataLines.push(line.slice("data:".length).trimStart());
-			}
-		}
-		if (dataLines.length === 0) continue;
-		events.push(dataLines.join("\n"));
-	}
-	return { events, buffer: normalized };
-}
+    const loadingMessage = addMessage(
+      "assistant",
+      "Please wait, I'm preparing your answer..."
+    );
+
+    setLoading(true);
+
+    try {
+      const response = await fetch(API_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          message,
+          context: chatHistory.slice(0, -1),
+          source: "website"
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Server error: ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      const reply =
+        data.reply ||
+        data.response ||
+        data.answer ||
+        data.message;
+
+      if (!reply || typeof reply !== "string") {
+        throw new Error("Invalid AI response format.");
+      }
+
+      loadingMessage.textContent = reply;
+
+      chatHistory.push({
+        role: "assistant",
+        content: reply
+      });
+
+      chatHistory = chatHistory.slice(-MAX_HISTORY);
+
+    } catch (error) {
+      console.error("FlyTripVisa AI:", error);
+
+      loadingMessage.textContent =
+        "Sorry, the AI service is temporarily unavailable. Please try again.";
+
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.textContent = "Retry";
+      retry.addEventListener("click", () => {
+        loadingMessage.remove();
+
+        chatHistory.pop();
+        sendMessage(message);
+      });
+
+      loadingMessage.appendChild(retry);
+
+      chatHistory.pop();
+
+    } finally {
+      setLoading(false);
+      elements.messages.scrollTop =
+        elements.messages.scrollHeight;
+    }
+  }
+
+  // Popup send
+  elements.send?.addEventListener("click", () => {
+    sendMessage(elements.input?.value);
+  });
+
+  // Enter to send
+  elements.input?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      sendMessage(elements.input.value);
+    }
+  });
+
+  // Hero send
+  elements.heroSend?.addEventListener("click", () => {
+    const message = elements.heroInput?.value.trim();
+    if (!message) return;
+
+    openChat();
+    elements.heroInput.value = "";
+    sendMessage(message);
+  });
+
+  elements.heroInput?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      elements.heroSend?.click();
+    }
+  });
+
+  // Bottom AI tab
+  elements.navButton?.addEventListener("click", () => {
+    openChat();
+  });
+
+  // Close popup
+  elements.close?.addEventListener("click", closeChat);
+
+  // Public functions if existing HTML needs them
+  window.openChatPopup = openChat;
+  window.closeChatPopup = closeChat;
+  window.sendFlyTripVisaMessage = sendMessage;
+
+})();
